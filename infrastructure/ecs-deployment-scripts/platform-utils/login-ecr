@@ -1,0 +1,21 @@
+#!/bin/sh
+
+# these credentials are for the ecr-readonly-user in mmgdev
+# this user only has read-only (i.e. pull-only) access to ECR
+# to rotate generate a new access key and tell people to update. you can see if the old key is active before deactivating and removing
+export AWS_ACCESS_KEY_ID=AKIAI5YFEVHF5HLPLBEA
+export AWS_SECRET_ACCESS_KEY=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
+unset AWS_SESSION_TOKEN
+export AWS_DEFAULT_REGION=eu-west-1
+
+eval $(aws ecr get-login)
+
+if [ "$?" != "0" ]; then
+    echo "
+The ecr login failed. This is typically for one of the following reasons:
+  * Docker can't be reached (maybe try eval \$(docker-machine env default)
+  * You need to install the aws cli (i.e. run: sudo pip install --update awscli)
+  * You need to update platform utils (i.e. run: platutils-update)
+" >&2
+fi
+

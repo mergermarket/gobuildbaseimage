@@ -1,0 +1,23 @@
+#!/usr/bin/python
+
+import sys
+import json
+
+config = json.loads(sys.stdin.read())
+
+outputs = config['environment']['STACK_OUTPUTS'] = config['meta']['STACK_DETAILS']['outputs']
+config['environment']['STACK_RESOURCES'] = config['meta']['STACK_DETAILS']['resources']
+
+if 'DockerLogGroupName' in outputs:
+    config['environment']['LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP'] = outputs['DockerLogGroupName']
+
+if 'DockerStdoutLogGroupName' in outputs:
+    config['environment']['LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDOUT'] = outputs['DockerStdoutLogGroupName']
+
+if 'DockerStderrLogGroupName' in outputs:
+    config['environment']['LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR'] = outputs['DockerStderrLogGroupName']
+
+# Temp fix/hack to have SERVICE_[PORT]_NAME environment variable
+config['environment']['SERVICE_' + str(config['environment']['PORT']) + '_NAME'] = config['environment']['SERVICE_NAME']
+
+print(json.dumps(config))

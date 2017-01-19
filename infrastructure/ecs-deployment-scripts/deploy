@@ -1,0 +1,58 @@
+#!/bin/bash
+
+set -eo pipefail
+
+ENV_NAME=$1
+VERSION=$2
+LEG=$3
+
+if [ -z "$ENV_NAME" ] || [ -z "$VERSION" ]; then
+    echo "usage: $0 ENV_NAME VERSION [ LEG ]" >&2
+    exit 1
+fi
+
+SCRIPTDIR=$(dirname $0)
+
+DATA="$(
+    $SCRIPTDIR/platform-utils/get-base-info $ENV_NAME $VERSION $LEG \
+    | $SCRIPTDIR/get-configuration \
+)"
+
+export AWS_DEFAULT_REGION=$(echo "$DATA" | jq -r .meta.REGION)
+
+DEV_ACCOUNT=$(echo "$DATA" | jq -r .meta.DEV_ACCOUNT)
+PROD_ACCOUNT=$(echo "$DATA" | jq -r .meta.PROD_ACCOUNT)
+
+if [[ "$ENV_NAME" == "live" || "$ENV_NAME" == "debug" ]]; then
+    ACCOUNT=$PROD_ACCOUNT
+else
+    ACCOUNT=$DEV_ACCOUNT
+fi
+
+ROLE_ID="${JOB_NAME##*/}=$BUILD_ID@jenkins"
+
+eval $($SCRIPTDIR/platform-utils/switch-aws-account $ACCOUNT "$ROLE_ID")
+$SCRIPTDIR/platform-utils/check-aws-account $ACCOUNT
+
+export STACK_INPUTS=$(echo "$DATA" | jq -f $SCRIPTDIR/stack-info.jq)
+
+echo "Running ELB migration:"
+$SCRIPTDIR/platform-utils/migrate-elb-subnets.py
+
+echo creating/updating stack with:
+echo "$STACK_INPUTS" | jq -C .
+
+STACK_DETAILS=$(echo "$STACK_INPUTS" | $SCRIPTDIR/platform-utils/create-or-update-stack -)
+
+echo stack details:
+echo "$STACK_DETAILS" | jq -C .
+
+DATA=$(echo "$DATA" \
+    | jq "{meta: (.meta + { \"STACK_DETAILS\": $STACK_DETAILS }), environment: .environment }" \
+    | $SCRIPTDIR/apply-stack-configuration \
+)
+
+echo "$DATA" \
+    | $SCRIPTDIR/generate-taskdef \
+    | $SCRIPTDIR/create-or-update-service
+

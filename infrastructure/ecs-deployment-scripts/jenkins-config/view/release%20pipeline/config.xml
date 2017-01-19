@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<au.com.centrumsystems.hudson.plugin.buildpipeline.BuildPipelineView plugin="build-pipeline-plugin@1.4.8">
+  <name>release pipeline</name>
+  <filterExecutors>false</filterExecutors>
+  <filterQueue>false</filterQueue>
+  <properties class="hudson.model.View$PropertyList"/>
+  <gridBuilder class="au.com.centrumsystems.hudson.plugin.buildpipeline.DownstreamProjectGridBuilder">
+    <firstJob>1.release</firstJob>
+    <firstJobLink>job/{TEAM}/job/{SERVICE}/job/1.release/</firstJobLink>
+  </gridBuilder>
+  <noOfDisplayedBuilds>10</noOfDisplayedBuilds>
+  <buildViewTitle>Release Pipeline</buildViewTitle>
+  <consoleOutputLinkStyle>Lightbox</consoleOutputLinkStyle>
+  <cssUrl></cssUrl>
+  <triggerOnlyLatestJob>false</triggerOnlyLatestJob>
+  <alwaysAllowManualTrigger>false</alwaysAllowManualTrigger>
+  <showPipelineParameters>false</showPipelineParameters>
+  <showPipelineParametersInHeaders>false</showPipelineParametersInHeaders>
+  <startsWithParameters>false</startsWithParameters>
+  <refreshFrequency>3</refreshFrequency>
+  <showPipelineDefinitionHeader>false</showPipelineDefinitionHeader>
+</au.com.centrumsystems.hudson.plugin.buildpipeline.BuildPipelineView>

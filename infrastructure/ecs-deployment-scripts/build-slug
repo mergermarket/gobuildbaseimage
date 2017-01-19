@@ -1,0 +1,43 @@
+#!/bin/sh
+
+set -e
+
+SERVICE_METADATA="$(cat service.json)"
+if [[ -z "$IN_DOCKER_MACHINE" ]]; then
+    SLUG_BUILDER_DOCKER_OPTS="$SLUG_BUILDER_DOCKER_OPTS $(echo "$SERVICE_METADATA" | jq -r 'if .SLUG_BUILDER_DOCKER_OPTS then .SLUG_BUILDER_DOCKER_OPTS else "" end')"
+fi
+
+set +e
+type docker-machine >& /dev/null
+DOCKER_MACHINE_STATUS="$?"
+set -e
+
+if [[ -z "$IN_DOCKER_MACHINE" && "$DOCKER_MACHINE_STATUS" -eq "0" ]]; then
+    docker-machine ssh default "
+        set -e
+        cd $PWD
+        export SLUG_BUILDER_DOCKER_OPTS=\"$SLUG_BUILDER_DOCKER_OPTS\"
+        export IN_DOCKER_MACHINE=1
+        $(dirname $0)/build-slug $@
+    "
+    exit
+fi
+
+COMPONENT_NAME=$1
+VERSION=$2
+
+mkdir -p target
+rm -f target/slug.tgz
+
+mkdir -p /tmp/app-cache
+
+# ugh, like --anchored, but working with bsdtar and busybox (for boot2docker)
+tar -cf - $( \
+        ls -A | \
+        grep -v '^.git/\{0,1\}$' | \
+        grep -v '^build/\{0,1\}$' | \
+        grep -v '^target/\{0,1\}$' | \
+        grep -v '^infrastructure/\{0,1\}$' | \
+        grep -v '^node_modules/\{0,1\}$' \
+    ) | docker run -v /tmp/app-cache:/tmp/cache:rw --rm -i -a stdin -a stdout -a stderr $SLUG_BUILDER_DOCKER_OPTS flynn/slugbuilder - \
+    > target/slug.tgz

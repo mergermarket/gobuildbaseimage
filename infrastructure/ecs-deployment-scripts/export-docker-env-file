@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+
+import fileinput
+import json
+import os
+import sys
+from subprocess import Popen, PIPE, CalledProcessError
+
+
+def execute(command, shell=True, env=None):
+    process = Popen(command, shell=shell, env=env, stdout=PIPE)
+
+    out = []
+    while True:
+        nextline = process.stdout.readline()
+        if nextline == '' and process.poll() is not None:
+            break
+        out.append(nextline)
+
+    process.communicate()
+    returncode = process.returncode
+
+    if returncode:
+        raise CalledProcessError(returncode, command)
+
+    return ''.join(out)
+
+
+def stringfy(s):
+    if isinstance(s, unicode):
+        return s.encode('ascii', 'ignore')
+    elif isinstance(s, dict):
+        new_dict = {}
+        for (k, v) in s.iteritems():
+            new_dict[stringfy(k)] = stringfy(v)
+        return new_dict
+    elif isinstance(s, list):
+        new_list = []
+        for v in s:
+            new_list.append(stringfy(v))
+        return new_list
+    return s
+
+
+def main(arguments):
+    env = arguments[1]
+    version = arguments[2]
+
+    cmd = '%s/platform-utils/get-base-info %s %s | %s/get-configuration' % \
+        (os.path.dirname(__file__), env, version, os.path.dirname(__file__))
+    input = execute(cmd)
+
+    data = ''.join([l.strip('\n') for l in input])
+    env = stringfy(json.loads(data).get('environment'))
+
+    docker_env = ['%s=%s' % (k, v) for k, v in env.iteritems()]
+
+    with open('env.list', 'w') as f:
+        for e in docker_env:
+            f.write('%s\n' % e.replace('\'', '"'))
+    f.close()
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print 'Usage: %s ENV_NAME VERSION' % sys.argv[0]
+        sys.exit(1)
+
+    main(sys.argv)

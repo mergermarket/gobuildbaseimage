@@ -1,0 +1,168 @@
+#!/bin/bash
+
+set -eo pipefail
+
+DATA="$(cat)"
+COMPONENT_NAME=$(echo "$DATA" | jq -r .meta.COMPONENT_NAME)
+ENV_NAME=$(echo "$DATA" | jq -r .meta.ENV_NAME)
+TASK_DEFINITION=$(echo "$DATA" | jq .taskdef)
+ECS_CLUSTER=$(echo "$DATA" | jq -r .meta.ECS_CLUSTER)
+LEG=$(echo "$DATA" | jq -r .meta.LEG)
+
+# TODO make configurable via input metadata rather than environment
+if [ -z "$DEPLOY_TIMEOUT" ]; then
+   DEPLOY_TIMEOUT=600
+   echo "$0: using deploy timeout of $DEPLOY_TIMEOUT seconds, set DEPLOY_TIMEOUT to change" >&2
+fi
+
+# TODO make changing desired count optional for updates, only when specified in input metadata (should be be able to scale up and down outside of deployments)
+if [ -z "$DESIRED_COUNT" ]; then
+    if [ "$ENV_NAME" == "live" ]; then
+        DESIRED_COUNT=3
+    else
+        DESIRED_COUNT=2
+    fi
+    echo "$0: no container count specified defaulting to $DESIRED_COUNT, set DESIRED_COUNT to change (to be deprecated)" >&2
+fi
+
+# TODO does this need to be configurable? - if so should be via input metadata rather than environment
+if [ -z "$ECS_SERVICE"]; then
+    ECS_SERVICE=$ENV_NAME-$COMPONENT_NAME
+    if [ "$LEG" != "" ]; then
+        ECS_SERVICE="$ECS_SERVICE-$LEG"
+    fi
+    echo "$0: using service $ECS_SERVICE, set ECS_SERVICE to change (to be deprecated)" >&2
+fi
+
+echo $0: posting task definition... >&2
+
+echo "$TASK_DEFINITION" | jq -C . >&2
+
+RESPONSE=$(aws ecs register-task-definition --cli-input-json "$TASK_DEFINITION")
+ARN=$(echo "$RESPONSE" | jq -r .taskDefinition.taskDefinitionArn)
+
+echo $0: task definition $ARN created. >&2
+
+STATUS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE | jq -r '.services[0].status // ""')
+
+function wait_for_deployment {
+    SERVICE="$1"
+    SEEN=$(echo "$SERVICE" | jq [.events[].id])
+    LOAD_BALANCER=$2
+
+    DEPLOYMENT_START_TIME=$(date +%s)
+
+    while true; do
+        SERVICE=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            | jq .services[0]
+        )
+
+        NEW_EVENT_IDS=$(echo "$SERVICE" | jq "[.events[].id] - $SEEN | reverse")
+        EVENTS_BY_ID=$(echo "$SERVICE" | jq ".events | map({ key: .id, value: .message }) | from_entries")
+
+        # output the new messages
+        MESSAGE=$(echo "$NEW_EVENT_IDS" | jq -r "map($EVENTS_BY_ID[.])[]")
+        if [ ! -z "$MESSAGE" ]; then
+            echo $0: $MESSAGE >&2
+        fi
+
+        #Fail if the deployment has taken longer than DEPLOY_TIMEOUT seconds
+        CURRENT_TIME=$(date +%s)
+        if [ "$(( $CURRENT_TIME - $DEPLOYMENT_START_TIME ))" -gt $DEPLOY_TIMEOUT ]
+        then
+            echo "Deployment failed, timeout of $DEPLOY_TIMEOUT seconds reached" >&2
+            echo "Ideally we should roll back here" >&2
+            exit 1
+        fi
+
+        SEEN=$(echo "$SERVICE" | jq [.events[].id])
+
+        if [ $(echo "$SERVICE" | jq -r '.deployments | length') -eq 1 ] && \
+           [ "$(echo "$SERVICE" | jq -r '.status')" == "ACTIVE" ]
+        then
+            if [ ! -z "$LOAD_BALANCER" ]; then
+                HEALTHY_INSTANCES=$(aws elb describe-instance-health --load-balancer-name $LOAD_BALANCER | jq '
+                    [.InstanceStates[] | select(.State == "InService")] | length
+                ')
+                if [ $HEALTHY_INSTANCES -eq 0 ]; then
+                    echo $0: waiting for an instance to be InService in $LOAD_BALANCER >&2
+                    sleep 2
+                    continue
+                fi
+            fi
+            break
+        fi
+
+        sleep 2
+    done
+}
+
+echo $0: checking service... >&2
+while [ "$STATUS" == "DRAINING" ]; do
+    echo $0: status is DRAINING, waiting for change... >&2
+    sleep 2
+    STATUS=$(aws ecs describe-services \
+        --cluster "$ECS_CLUSTER" \
+        --services "$ECS_SERVICE" \
+        | jq -r '.services[0].status' \
+    )
+done
+
+echo $0: found status $STATUS >&2
+if [ -z "$STATUS" ] || [ "$STATUS" == "INACTIVE" ]; then
+
+
+    LOAD_BALANCER=$(echo "$DATA" | jq -r .meta.STACK_DETAILS.outputs.LoadBalancer)
+    SCHEDULER_ROLE=$(echo "$DATA" | jq -r .meta.STACK_DETAILS.outputs.SchedulerRole)
+
+    LOAD_BALANCERS=$(echo "$TASK_DEFINITION" | jq -r '
+        .containerDefinitions
+        | map(
+            "loadBalancerName='$LOAD_BALANCER',containerName="
+            + .name
+            + ",containerPort="
+            + (.portMappings[].hostPort | tostring)
+        )[0]
+    ')
+
+    echo $0: service $ECS_SERVICE not found, creating... >&2
+    RESULT=$(aws ecs create-service \
+        --cluster $ECS_CLUSTER \
+        --service-name $ECS_SERVICE \
+        --task-definition $ARN \
+        --desired-count $DESIRED_COUNT \
+        --load-balancers $LOAD_BALANCERS \
+        --role $SCHEDULER_ROLE
+    )
+    echo "$RESULT" | jq -C 'del(.service.events)' >&2
+
+    # ECS doesn't wait for instances to come into service in ELB for a new service, so we pass it in for polling
+    wait_for_deployment "$(echo "$RESULT" | jq .service)" $LOAD_BALANCER
+
+else
+
+    echo $0: updating $ECS_SERVICE service on $ECS_CLUSTER cluster... >&2
+    SERVICE=$(aws ecs update-service \
+        --task-definition "$ARN" \
+        --cluster "$ECS_CLUSTER" \
+        --desired-count $DESIRED_COUNT \
+        --service "$ECS_SERVICE" \
+        | jq .service \
+    )
+
+    echo "$SERVICE" | jq -C 'del(.events)' >&2
+
+    wait_for_deployment "$SERVICE"
+
+fi
+
+echo $0: deployment complete, new service state: >&2
+aws ecs describe-services \
+    --cluster "$ECS_CLUSTER" \
+    --services "$ECS_SERVICE" \
+    | jq -C '.services[0] | del(.events)'
+
+echo $0: done. >&2
+

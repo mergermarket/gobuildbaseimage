@@ -1,0 +1,57 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+import sys
+import json
+import os
+from subprocess import check_output
+
+if len(sys.argv) != 3:
+    print("Usage: platutils-switch-aws-account <account> <session-name>", file=sys.stderr)
+    sys.exit(1)
+
+(account, session) = sys.argv[1:]
+
+dir = os.path.dirname(os.path.realpath(__file__))
+accounts = json.loads(open(os.path.join(dir, "accounts.json")).read())
+
+account_number = accounts.get(account, None)
+
+if account_number is None:
+    print("unknown account %s" % account, file=sys.stderr)
+
+role = "arn:aws:iam::%s:role/admin" % accounts[account]
+
+def assume_role(profile=None):    
+    global_args = []
+    profile_text = ""
+    if profile is not None:
+        global_args = [ "--profile", profile ]
+        profile_text = " using --profile=%s" % profile
+
+    try:
+        print("trying to assumpe role %s%s" % (role, profile_text), file=sys.stderr)
+        data = json.loads(check_output(
+            [ "aws" ] + global_args + [ "sts", "assume-role" ] +
+            [ "--role-arn", role ] +
+            [ "--role-session-name", session ],
+        ))
+    
+        credentials = data.get("Credentials", None)
+        if credentials is None:
+            raise Exception(str(data))
+
+        print("export AWS_ACCESS_KEY_ID=%s" % credentials.get("AccessKeyId"))
+        print("export AWS_SECRET_ACCESS_KEY=%s" % credentials.get("SecretAccessKey"))
+        print("export AWS_SESSION_TOKEN=%s" % credentials.get("SessionToken"))
+
+        print("Assumed role in %s account, expires %s" % (account, credentials.get("Expiration")), file=sys.stderr)
+    except:
+        print("assuming role failed", file=sys.stderr)
+        return False
+    return True
+
+if not assume_role():
+    if not assume_role("mergermarket"):
+        print("unable to switch AWS account", file=sys.stderr)
+        sys.exit(1)

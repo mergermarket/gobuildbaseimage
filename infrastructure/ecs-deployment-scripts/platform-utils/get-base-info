@@ -1,0 +1,78 @@
+#!/bin/bash
+
+set -eo pipefail
+
+ENV_NAME=$1
+VERSION=$2
+LEG=$3
+
+if [ -z "$ENV_NAME" ] || [ -z "$VERSION" ]; then
+    echo "usage: $0 ENV_NAME VERSION [ LEG ]" >&2
+    exit 1
+fi
+
+UTILS_DIR=$(dirname $0)
+
+. $UTILS_DIR/generate-component-name
+
+ACCOUNTS_FILENAME="$UTILS_DIR/accounts.json"
+ACCOUNTS="$(cat $ACCOUNTS_FILENAME)"
+
+if [ ! -f service.json ]; then
+    echo required project metadata service.json missing - see: >&2
+    echo \ \ https://intranet.mergermarket.com/display/TECH/ECS+Deployment+Draft#ECSDeploymentDraft-Step2:Addservicemeta-data >&2
+    exit 1
+fi
+
+# Insert Default values for:
+# region, type and account_scheme
+REGION=eu-west-1
+TYPE=slug
+
+SERVICE_NAME=$ENV_NAME-$COMPONENT_NAME
+if [ "$LEG" != "" ]; then
+    SERVICE_NAME="$SERVICE_NAME-$LEG"
+fi
+
+INFO="$(echo {} | jq "{
+    meta: ({
+        ENV_NAME: \"$ENV_NAME\",
+        VERSION: \"$VERSION\",
+        COMPONENT_NAME: \"$COMPONENT_NAME\",
+        SERVICE_NAME: \"$SERVICE_NAME\",
+        REGION:  \"$REGION\",
+        TYPE:  \"$TYPE\",
+        LEG: \"$LEG\",
+        ELB_CERT: \"auto\",
+    } + $(cat service.json))
+}")"
+
+REGION="$(echo "$INFO" | jq -r .meta.REGION)"
+
+ACCOUNT_PREFIX=$(echo "$INFO" | jq -r '.meta.ACCOUNT_PREFIX // "mmg"')
+
+DEV_ACCOUNT="${ACCOUNT_PREFIX}dev"
+DEV_ACCOUNT_NUMBER=$(echo "$ACCOUNTS" | jq -r ".$DEV_ACCOUNT")
+if [ -z "$DEV_ACCOUNT_NUMBER" ]; then
+    echo no account number configured for $DEV_ACCOUNT in $ACCOUNTS_FILENAME >&2
+    exit 1 
+fi
+
+PROD_ACCOUNT="${ACCOUNT_PREFIX}prod"
+PROD_ACCOUNT_NUMBER=$(echo "$ACCOUNTS" | jq -r ".$PROD_ACCOUNT")
+if [ -z "$PROD_ACCOUNT_NUMBER" ]; then
+    echo no account number configured for $PROD_ACCOUNT in $ACCOUNTS_FILENAME >&2
+    exit 1 
+fi
+    
+
+echo "$INFO" | jq ". * {
+  meta: {
+    ACCOUNT_PREFIX: \"$ACCOUNT_PREFIX\",
+    DEV_ACCOUNT: \"$DEV_ACCOUNT\",
+    PROD_ACCOUNT: \"$PROD_ACCOUNT\",
+    DEV_ACCOUNT_NUMBER: \"$DEV_ACCOUNT_NUMBER\",
+    PROD_ACCOUNT_NUMBER: \"$PROD_ACCOUNT_NUMBER\",
+    DOCKER_REGISTRY: \"$DEV_ACCOUNT_NUMBER.dkr.ecr.$REGION.amazonaws.com\",
+  }
+}"

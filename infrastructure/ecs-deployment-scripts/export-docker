@@ -1,0 +1,27 @@
+#!/bin/bash
+
+set -eo pipefail
+
+ENV_NAME=$1
+VERSION=$2
+
+if [ -z "$ENV_NAME" ] || [ -z "$VERSION" ]; then
+    echo usage: $0 ENV_NAME VERSION >&2
+    exit 1
+fi
+
+export OUTPUT=docker
+export LOCAL=true
+
+VARIABLES=`$(dirname $0)/platform-utils/get-base-info $ENV_NAME $VERSION \
+    | $(dirname $0)/get-configuration \
+    | $(dirname $0)/environment-export.py`
+
+echo "$VARIABLES"
+echo ""
+
+echo -e 'Usage of the variables: docker run -i -a stdin -a stdout -a stderr `./export-docker <env> <version> 2> /dev/null` flynn/slugrunner start web' >&2
+
+#docker run -i -a stdin -a stdout -a stderr $VARIABLES flynn/slugrunner start web
+
+#docker run -i -a stdin -a stdout -a stderr `./export-docker ci 0.1 2> /dev/null` flynn/slugrunner start web

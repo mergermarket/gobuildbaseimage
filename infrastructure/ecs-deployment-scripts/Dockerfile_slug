@@ -1,0 +1,2 @@
+FROM flynn/slugrunner
+ADD slug.tgz /app

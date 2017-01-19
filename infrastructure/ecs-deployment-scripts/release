@@ -1,0 +1,98 @@
+#!/bin/bash
+
+set -e
+
+PREFIX='ecs-deployment-scripts/release -'
+
+VERSION=$1
+if [ -z "$VERSION" ]
+then
+    echo "$PREFIX usage: release VERSION" >&2
+    exit 1
+fi
+
+SCRIPTDIR=$( dirname "${BASH_SOURCE[0]}" )
+
+DATA="$($SCRIPTDIR/platform-utils/get-base-info null $VERSION)"
+TYPE=$(echo "$DATA" | jq -r .meta.TYPE)
+COMPONENT_NAME=$(echo "$DATA" | jq -r .meta.COMPONENT_NAME)
+export AWS_DEFAULT_REGION=$(echo "$DATA" | jq -r .meta.REGION)
+
+DEV_ACCOUNT=$(echo "$DATA" | jq -r .meta.DEV_ACCOUNT)
+DEV_ACCOUNT_NUMBER=$(echo "$DATA" | jq -r .meta.DEV_ACCOUNT_NUMBER)
+PROD_ACCOUNT_NUMBER=$(echo "$DATA" | jq -r .meta.PROD_ACCOUNT_NUMBER)
+
+ROLE_ID="${JOB_NAME##*/}=$BUILD_ID@jenkins"
+
+mkdir -p docker-config
+export DOCKER_CONFIG=$(pwd)/docker-config
+
+# the following is now done in a subshell to avoid assumed credentials being used below
+(
+    eval $($SCRIPTDIR/platform-utils/switch-aws-account $DEV_ACCOUNT "$ROLE_ID")
+    $SCRIPTDIR/platform-utils/check-aws-account $DEV_ACCOUNT
+    
+    set +x
+    eval $(aws ecr get-login)
+    set -x
+
+    REPOSITORY=$(aws ecr describe-repositories --repository-names $COMPONENT_NAME | jq -r .repositories[0].repositoryName)
+    if [ -z "$REPOSITORY" ]; then
+        echo "$PREFIX creating ECR repository" >&2
+
+        aws ecr create-repository --repository-name $COMPONENT_NAME
+
+        aws ecr set-repository-policy --repository-name $COMPONENT_NAME \
+            --policy-text '
+                {
+                    "Version": "2008-10-17",
+                    "Statement": [ {
+                        "Sid": "allow production",
+                        "Effect": "Allow",
+                        "Principal": { "AWS": "arn:aws:iam::'$PROD_ACCOUNT_NUMBER':root" },
+                        "Action": [ "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability" ]
+                    } ]
+            }
+        '
+    fi
+)
+
+DOCKER_BUILD_DIR=$(echo "$DATA" | jq -r .meta.DOCKER_BUILD_DIR)
+if [ "$DOCKER_BUILD_DIR" == "null" ]; then
+    DOCKER_BUILD_DIR=.
+fi
+
+REGISTRY="$(echo "$DATA" | jq -r .meta.DOCKER_REGISTRY)"
+
+echo "$PREFIX building $TYPE component" >&2
+
+if [ $TYPE == "slug" ];
+then
+    $SCRIPTDIR/build-slug $COMPONENT_NAME $VERSION
+
+    cp infrastructure/ecs-deployment-scripts/Dockerfile_slug target/Dockerfile
+    DOCKER_BUILD_DIR=target
+fi
+
+if [ -x ./prepare-docker-build ]; then
+    echo "$PREFIX running ./prepare-docker-build $COMPONENT_NAME-${VERSION} $DOCKER_BUILD_DIR" >&2
+    ./prepare-docker-build $COMPONENT_NAME-${VERSION} $DOCKER_BUILD_DIR
+fi
+
+echo "$PREFIX building docker image $REGISTRY/$COMPONENT_NAME:${VERSION}"
+
+docker build -t $REGISTRY/$COMPONENT_NAME:${VERSION} $DOCKER_BUILD_DIR
+
+if [ -x ./on-docker-build ]; then
+    echo "$PREFIX running ./on-docker-build $REGISTRY/$COMPONENT_NAME:${VERSION}" >&2
+    ./on-docker-build $REGISTRY/$COMPONENT_NAME:${VERSION}
+fi
+
+echo "$PREFIX pushing image $REGISTRY/$COMPONENT_NAME:${VERSION}" >&2
+docker push $REGISTRY/$COMPONENT_NAME:${VERSION}
+
+echo "$PREFIX pushing tag $REGISTRY/$COMPONENT_NAME:latest" >&2
+docker tag $REGISTRY/$COMPONENT_NAME:${VERSION} $REGISTRY/$COMPONENT_NAME:latest
+docker push $REGISTRY/$COMPONENT_NAME:latest
+
+echo "$PREFIX done." >&2

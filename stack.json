@@ -1,0 +1,284 @@
+{
+  "Parameters" : {
+    "environment" : {
+      "AllowedValues" : [ "live", "aslive", "qa", "ci", "at" ],
+      "Type" : "String",
+      "Default" : "ci",
+      "Description" : "Environment name (for dns name and tagging)."
+    },
+    "vpc" : {
+      "Type" : "AWS::EC2::VPC::Id",
+      "Description" : "VPC to put the load balancer in."
+    },
+    "backendPort" : {
+      "Type" : "Number",
+      "Description" : "Port to connect to on the backend"
+    },
+    "subnets" : {
+      "Type" : "List<AWS::EC2::Subnet::Id>",
+      "Description" : "VPC subnets to put the ELB in."
+    },
+    "ELBType": {
+      "Type": "String",
+      "Description": "The type of loadbalancer to create internal/internet-facing",
+      "AllowedValues": [ "internal", "internet-facing" ],
+      "Default": "internal"
+    },
+    "clientSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup::Id",
+      "Description" : "EC2 security group granting access to the ECS cluster"
+    },
+    "componentName" : {
+      "Type" : "String",
+      "Description" : "The name of your component (should match github repository name).",
+      "AllowedPattern" : "^[a-zA-Z0-9-_]+$"
+    },
+    "dnsName" : {
+      "Type" : "String",
+      "Description" : "The name of your component in dns, excluding the environment and the zone parts.",
+      "AllowedPattern" : "^[a-zA-Z0-9-]+$"
+    },
+    "dnsZone" : {
+      "Type" : "String",
+      "Description" : "The dns host that the service should live under (mmgapi.net., mmgsubscriber.com., mmgadmin.com., mergermarket.it.).",
+      "AllowedValues": [
+        "mmgapi.net.", "mmgsubscriber.com.", "mmgadmin.com.", "mergermarket.it.",
+        "dev.mmgapi.net.", "dev.mmgsubscriber.com.", "dev.mmgadmin.com.", "dev.mergermarket.it.",
+        "infapi.net.", "infadmin.net.", "infsubscriber.net.",
+        "dev.infapi.net.", "dev.infadmin.net.", "dev.infsubscriber.net.",
+        "xtractapi.net.", "xtractadmin.net.", "xtractsubscriber.net.",
+        "dev.xtractapi.net.", "dev.xtractadmin.net.", "dev.xtractsubscriber.net.",
+        "c6api.net.", "c6admin.net.", "c6subscriber.net.",
+        "dev.c6api.net.", "dev.c6admin.net.", "dev.c6subscriber.net."
+      ]
+    },
+    "leg" : {
+      "Type" : "String",
+      "Description" : "The name of the leg, or empty string.",
+      "AllowedValues": [ "blue", "green", "none" ]
+    },
+    "sslCertificateId" : {
+      "Type" : "String",
+      "Description" : "SSL certificate (ARN) to use with the load balancer."
+    },
+    "elbAccessLogsBucket" : {
+      "Type" : "String",
+      "Description" : "The name of the bucket that will hold the ELB access logs.",
+      "Default": "elb-logentries-integration-logbucket-17c7hhds8f302",
+      "AllowedPattern" : "^[a-zA-Z0-9_-]+$"
+    },
+    "healthcheckSuffix" : {
+      "Type" : "String",
+      "Description" : "The suffix used to check service health.",
+      "Default": "/internal/healthcheck",
+      "AllowedPattern" : "^\\S+$"
+    }
+  },
+  "Conditions" : {
+    "isLive" : { "Fn::Equals" : [ { "Ref" : "environment" }, "live" ] },
+    "hasLeg" : { "Fn::Not": [ { "Fn::Equals" : [ { "Ref" : "leg" }, "none" ] } ] }
+  },
+  "Resources" : {
+    "DnsCname" : {
+      "Type" : "AWS::Route53::RecordSet",
+      "Properties" : {
+        "Type" : "CNAME",
+        "TTL": 300,
+        "HostedZoneName" : { "Ref" : "dnsZone" },
+        "Name" : { "Fn::Join" : [ "", [
+          { "Fn::If" : [ "hasLeg",
+            { "Fn::Join" : [ "", [ { "Ref" : "leg" }, "-" ] ] },
+            ""
+          ] },
+          { "Fn::If" : [ "isLive",
+            "",
+            { "Fn::Join" : [ "", [ { "Ref" : "environment" }, "-" ] ] }
+          ] },
+          { "Ref" : "dnsName" }, ".", { "Ref" : "dnsZone" }
+        ] ] },
+        "ResourceRecords": [ { "Fn::GetAtt": [ "LoadBalancer", "DNSName" ] } ]
+      }
+    },
+    "LoadBalancer" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+        "AccessLoggingPolicy": {
+            "Enabled": "True",
+            "EmitInterval": "5",
+            "S3BucketName": { "Ref": "elbAccessLogsBucket" }
+        },
+        "HealthCheck" : {
+          "Target" : { "Fn::Join" : [ "", [ "http:", { "Ref" : "backendPort" },  { "Ref" : "healthcheckSuffix" } ] ] },
+          "Interval" : 5,
+          "UnhealthyThreshold" : 2,
+          "Timeout" : 4,
+          "HealthyThreshold" : 2
+        },
+        "Scheme" : { "Ref": "ELBType" },
+        "Listeners" : [
+          {
+            "InstancePort" : { "Ref" : "backendPort" },
+            "SSLCertificateId" : { "Ref" : "sslCertificateId" },
+            "Protocol" : "HTTPS",
+            "LoadBalancerPort" : "443",
+            "InstanceProtocol" : "HTTP"
+          }
+        ],
+        "CrossZone" : "true",
+        "ConnectionDrainingPolicy" : {
+          "Enabled" : true,
+          "Timeout" : 10
+        },
+        "Subnets" : {
+          "Ref" : "subnets"
+        },
+        "Tags" : [
+          {
+            "Value" : { "Fn::Join" : [ " ", [ { "Ref" : "AWS::StackName" }, "load balancer" ] ] },
+            "Key" : "Name"
+          }
+        ],
+        "SecurityGroups" : [
+          { "Ref" : "LoadBalancerSecurityGroup" },
+          { "Ref" : "clientSecurityGroup" }
+        ]
+      }
+    },
+    "SchedulerRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version" : "2012-10-17",
+          "Statement" : [
+            {
+              "Effect" : "Allow",
+              "Action" : "sts:AssumeRole",
+              "Principal" : {
+                "Service" : "ecs.amazonaws.com"
+              }
+            }
+          ]
+        },
+        "Policies" : [
+          {
+            "PolicyDocument" : {
+              "Version" : "2012-10-17",
+              "Statement" : [
+                {
+                  "Effect" : "Allow",
+                  "Resource" : {
+                    "Fn::Join" : [
+                      "",
+                      [
+                        "arn:aws:elasticloadbalancing:",
+                        { "Ref" : "AWS::Region" },
+                        ":",
+                        { "Ref" : "AWS::AccountId" },
+                        ":loadbalancer/",
+                        { "Ref" : "LoadBalancer" }
+                      ]
+                    ]
+                  },
+                  "Action" : [
+                    "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                    "elasticloadbalancing:RegisterInstancesWithLoadBalancer"
+                  ]
+                },
+                {
+                  "Effect" : "Allow",
+                  "Resource" : "*",
+                  "Action" : "elasticloadbalancing:Describe*"
+                }
+              ]
+            },
+            "PolicyName" : "SchedulerRole"
+          }
+        ],
+        "Path" : "/"
+      }
+    },
+    "StdoutDockerLogGroup" : {
+      "Type" : "AWS::Logs::LogGroup",
+      "Properties" : {
+        "RetentionInDays" : 7
+      }
+    },
+    "StderrDockerLogGroup" : {
+      "Type" : "AWS::Logs::LogGroup",
+      "Properties" : {
+        "RetentionInDays" : 7
+      }
+    },
+    "LoadBalancerSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "VpcId" : { "Ref" : "vpc" },
+        "GroupDescription" : " load balancer security group",
+        "SecurityGroupIngress" : [
+          {
+            "ToPort" : "443",
+            "FromPort" : "443",
+            "IpProtocol" : "tcp",
+            "CidrIp" : "0.0.0.0/0"
+          }
+        ],
+        "Tags" : [
+          {
+            "Value" : { "Fn::Join" : [ " ", [ { "Ref" : "AWS::StackName"} ] ] },
+            "Key" : "Name"
+          }
+        ]
+      }
+    },
+    "ServiceRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "AssumeRolePolicyDocument" : {
+          "Version": "2012-10-17",
+          "Statement": [ {
+            "Effect": "Allow",
+            "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+            "Action": "sts:AssumeRole"
+          } ]
+        },
+        "Policies" : [ {
+          "PolicyName": "policy",
+          "PolicyDocument": {
+            "Version" : "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:Describe*"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+        } ]
+      }
+    }
+  },
+  "Outputs" : {
+    "LoadBalancer" : {
+      "Value" : { "Ref" : "LoadBalancer" },
+      "Description" : "Name of the load balancer to register with the ECS service."
+    },
+    "SchedulerRole" : {
+      "Value" : { "Ref" : "SchedulerRole" },
+      "Description" : "IAM role to associate with the ECS service to register and deregister instances."
+    },
+    "DockerStdoutLogGroupName" : {
+      "Value" : { "Ref" : "StdoutDockerLogGroup" },
+      "Description" : "Name of the log group in cloudwatchlogs for the stdout docker logs (i.e. output to the console) for this service."
+    },
+    "DockerStderrLogGroupName" : {
+      "Value" : { "Ref" : "StderrDockerLogGroup" },
+      "Description" : "Name of the log group in cloudwatchlogs for the stderr docker logs (i.e. output to the console) for this service."
+    },
+    "ServiceRoleArn" : {
+      "Value" : { "Fn::GetAtt" : [ "ServiceRole", "Arn" ] },
+      "Description" : "IAM role for the service to assume."
+    }
+  }
+}

@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+VERSION=$1
+if [ -z "$VERSION" ]
+then
+    echo please provide a version >&2
+    exit 1
+fi
+
+# Get the component name from base info
+source $(dirname $0)/platform-utils/generate-component-name
+
+aws s3 cp --recursive target s3://liveslugbuilderstatefulresources-slugbucket-1bgj3him51uu1/$COMPONENT_NAME/$VERSION

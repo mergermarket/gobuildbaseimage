@@ -1,0 +1,57 @@
+#!/bin/bash
+
+set -eo pipefail
+
+CONFIG="$(cat)"
+COMPONENT_NAME=$(echo "$CONFIG" | jq -r .meta.COMPONENT_NAME)
+ENV_NAME=$(echo "$CONFIG" | jq -r .meta.ENV_NAME)
+LEG=$(echo "$CONFIG" | jq -r .meta.LEG)
+
+if [ -z "$CONFIG_FOLDER" ]; then
+    CONFIG_FOLDER=team-config
+    echo $0: using CONFIG_FOLDER=$CONFIG_FOLDER, set CONFIG_FOLDER to change >&2
+fi
+
+echo -n checking for global config in $CONFIG_FOLDER/global-config/global.json... >&2
+if [ -f $CONFIG_FOLDER/global-config/global.json ]; then
+    echo "applying" >&2
+    CONFIG=$($(dirname $0)/apply-global-config "$CONFIG" "$(cat $CONFIG_FOLDER/global-config/global.json)")
+else
+    echo not found, skipping \(see https://github.com/mergermarket/global-config\) >&2
+fi
+
+# Leaving in $CONFIG_FOLDER/defaults.jq,$CONFIG_FOLDER/environments/$ENV_NAME.jq and $CONFIG_FOLDER/services/$COMPONENT_NAME.jq
+# for backwards compatibility
+
+OVERLAYS="
+    $CONFIG_FOLDER/defaults.jq
+    $CONFIG_FOLDER/environments/$ENV_NAME.jq
+    $CONFIG_FOLDER/services/$COMPONENT_NAME.jq
+    $CONFIG_FOLDER/services/$COMPONENT_NAME/$ENV_NAME.jq
+"
+
+if [ "$LEG" != "" ]; then
+    OVERLAYS="$OVERLAYS $CONFIG_FOLDER/services/$COMPONENT_NAME/$ENV_NAME/$LEG.jq"
+fi
+
+# workaround for errors not being fatal in older jq
+errors_tmpfile=$(mktemp -t "$(basename $0)XXXXXXX")
+
+for OVERLAY in $OVERLAYS; do
+    echo -n "$0: checking for config in $OVERLAY... " >&2
+    if [[ -e $OVERLAY ]]; then
+        echo "found, applying." >&2
+        set +e
+        CONFIG=$(echo "$CONFIG" | jq -e -f $OVERLAY 2> $errors_tmpfile)
+        set -e
+        errors="$(cat $errors_tmpfile)"
+        if [ ! -z "$errors" ]; then
+            echo "$errors" >&2
+            exit 1
+        fi
+    else
+        echo "not found, skipping." >&2
+    fi
+done
+
+echo "$CONFIG" | jq .

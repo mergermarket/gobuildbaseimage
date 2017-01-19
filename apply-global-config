@@ -1,0 +1,102 @@
+#!/usr/bin/python
+
+from __future__ import print_function
+
+import json
+import sys
+from re import sub
+import os
+
+scriptdir = os.path.dirname(os.path.realpath(__file__))
+
+config = json.loads(sys.argv[1])
+meta = config['meta']
+environment = config['environment'] = {}
+global_config = json.loads(sys.argv[2])
+
+# get the region to use
+region = meta.get('REGION')
+
+# this is the new mechanism - guarded in case a team takes an update to ecs-deployment-scripts
+# without the corresponding change in global-config
+if 'elb-access-logs-buckets' in global_config:
+    meta['ELB_ACCESS_LOGS_BUCKET'] = global_config['elb-access-logs-buckets'][region]
+else:
+    # old behaviour - to be removed once update has been pushed out
+    # set the bucket for ELB logs to go into
+    meta['ELB_ACCESS_LOGS_BUCKET'] = global_config['elb-access-logs-bucket']
+
+env = meta['ENV_NAME']
+
+class ConfigException(Exception):
+    pass
+
+try:
+
+    is_prod = env == 'live' or env == 'debug'
+
+    account_prefix = meta['ACCOUNT_PREFIX']
+    account = meta['PROD_ACCOUNT'] if is_prod else meta['DEV_ACCOUNT']
+
+    # get/set the cluster to use
+    cluster = meta['ECS_CLUSTER'] = ('production' if is_prod else 'non-production') + meta.get('ECS_CLUSTER_SUFFIX', '')
+
+    # set the ecs details from the global config
+    global_ecs = global_config['ecs']
+    if not account in global_ecs['accounts']:
+        raise ConfigException('no global ecs config for the "{0}" account'.format(account))
+
+    if not region in global_ecs['accounts'][account]['regions']:
+        raise ConfigException('no global ecs config for the "{0}" region within the "{1}" account'.format(region, account))
+
+    if not cluster in global_ecs['accounts'][account]['regions'][region]['clusters']:
+        raise ConfigException('no global ecs config for the "{0}" cluster within the "{1}" region, within the "{2}" account'.format(cluster, region, account))
+
+    meta['ECS_PARAMS'] = global_ecs['accounts'][account]['regions'][region]['clusters'][cluster]
+
+    # set the parameters for dns
+    if 'DOMAIN' not in meta:
+        if meta['COMPONENT_NAME'].endswith('-service'):
+            meta['DOMAIN'] = 'mmgapi.net'
+        elif meta['COMPONENT_NAME'].endswith('-subscriber'):
+            meta['DOMAIN'] = 'mmgsubscriber.com'
+        elif meta['COMPONENT_NAME'].endswith('-admin'):
+            meta['DOMAIN'] = 'mmgadmin.com'
+        else:
+            meta['DOMAIN'] = 'mergermarket.it'
+
+    if meta['DOMAIN'] != None:
+        meta['DNS_ZONE'] = ('' if is_prod else 'dev.') + meta['DOMAIN'] + '.'
+
+    if 'DNS_NAME' not in meta:
+        meta['DNS_NAME'] = sub(r'-(?:service|subscriber|admin)$', '', meta['COMPONENT_NAME'])
+
+    # set the parameters for ssl in the elb
+    if 'ELB_CERT' in meta and meta['ELB_CERT'] == 'auto':
+        certs_by_domain = global_config['elb-certificates']['accounts'][account]['domains']
+        if meta['DOMAIN'] not in certs_by_domain:
+            raise ConfigException('not elb certificate configured for domain "{0}" in account "{1}"'.format(str(meta['DOMAIN']), account))
+        meta['ELB_CERT'] = certs_by_domain[meta['DOMAIN']]
+        if meta['ELB_CERT'] == 'auto':
+            raise Exception('ELB cert still auto, domain=' + meta['DOMAIN'] + ', account=' + account)
+
+    # docker parameters
+    if meta['TYPE'] == 'slug':
+        meta['DOCKER_COMMAND'] = ['start', 'web']
+
+    registry = meta['DOCKER_REGISTRY']
+
+    meta['DOCKER_IMAGE'] = registry + '/' + meta['COMPONENT_NAME'] + ':' + meta['VERSION']
+
+    # set global environment info
+    environment['VERSION'] = meta['VERSION']
+    environment['ENV_NAME'] = meta['ENV_NAME']
+    environment['COMPONENT_NAME'] = meta['COMPONENT_NAME']
+    environment['SERVICE_NAME'] = meta['SERVICE_NAME']
+    environment['LEG'] = meta['LEG']
+
+    print(json.dumps(config))
+
+except ConfigException as e:
+    print('error: ' + str(e), file=sys.stderr)
+    sys.exit(1)

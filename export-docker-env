@@ -1,0 +1,30 @@
+#!/bin/bash
+
+##
+## This script exports the configuration for the current service in a KEY=VALUE format.
+## Using the sample script below, you can write that into a file, and use that as the "env_file" target in docker-compose.yml
+##
+## Eg:
+##
+## local_config_folder="$PWD/../team-config"
+## env="local"
+## leg="1"
+## dockerEnvFile="$PWD/docker-env"
+## CONFIG_FOLDER=$local_config_folder ./infrastructure/ecs-deployment-scripts/export-docker-env $env $leg 2>/dev/null > $dockerEnvFile
+##
+
+set -eo pipefail
+
+ENV_NAME=$1
+VERSION=$2
+LEG=$3
+
+if [ -z "$ENV_NAME" ] || [ -z "$VERSION" ]; then
+    echo "usage: $0 ENV_NAME VERSION [ LEG ] " >&2
+    exit 1
+fi
+
+$(dirname $0)/platform-utils/get-base-info $ENV_NAME $VERSION $LEG\
+    | $(dirname $0)/get-configuration \
+    | jq -r '.environment | to_entries | map(.key + "=" + ( .value | tostring ))[]'
+

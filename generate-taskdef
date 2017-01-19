@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -eo pipefail
+
+DATA="$(cat)"
+
+DEFAULT_TASKDEF=$(dirname $0)/default-taskdef.jq
+if [ -z "$TASKDEF" ]; then
+    echo $0: using TASKDEF=$DEFAULT_TASKDEF, set TASKDEF to change >&2
+    TASKDEF=$DEFAULT_TASKDEF
+fi
+
+echo "$DATA" | jq -f $TASKDEF
+

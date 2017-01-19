@@ -1,0 +1,16 @@
+#!/bin/bash
+
+ACCOUNT=$1
+
+if [ -z "$ACCOUNT" ]; then
+    echo "Usage: platutils-check-aws-account <account>" >&2
+    exit 1
+fi
+
+ALIASES="$(aws iam list-account-aliases)"
+
+if [[ "$ALIASES" != *"\"$ACCOUNT\""* ]]; then
+    echo "Expected account $ACCOUNT, but got $ALIASES" >&2
+    exit 1
+fi
+
